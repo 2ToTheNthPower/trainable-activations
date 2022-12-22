@@ -1,0 +1,243 @@
+---
+title: "STAT Learning Project"
+author: "Aaron Davis"
+date: "10/8/2022"
+output: html_document
+---
+
+# Import Libraries
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(tensorflow)
+library(keras)
+
+use_python("~/miniforge3/bin/python")
+use_condaenv("base")
+```
+
+# Data Loading and Preprocessing
+
+Here we import our mnist dataset from keras and divide it into train and test datasets.
+
+```{r load_toy_dataset}
+mnist <- dataset_mnist()
+x_train <- mnist$train$x
+y_train <- mnist$train$y
+x_test <- mnist$test$x
+y_test <- mnist$test$y
+```
+
+Here we flatten our train and test datasets to be fed into a dense neural network and normalize all values to be between 0 and 1.
+
+```{r}
+dim(x_train) <- c(nrow(x_train), 784)
+dim(x_test) <- c(nrow(x_test), 784)
+
+x_train <- x_train / 255
+x_test <- x_test / 255
+```
+
+Next, we convert our labels from integers between 1 and 10 to a one hot encoded form.
+
+```{r}
+y_train <- to_categorical(y_train, 10)
+y_test <- to_categorical(y_test, 10)
+```
+
+# Defining and Training Baseline Perceptron
+
+```{r}
+inp <- layer_input(shape=c(784))
+
+output <- inp %>% layer_dense(units = 1, activation = "relu") %>%
+          layer_dense(units = 10, activation = "softmax")
+
+model2 <- keras_model(inp, output)
+```
+
+```{r}
+model2 %>% compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_rmsprop(),
+  metrics = c("accuracy")
+)
+```
+
+```{r}
+history2 <- model2 %>% fit(
+  x_train, y_train, 
+  epochs = 50, batch_size = 512, 
+  validation_split = 0.1
+)
+```
+```{r}
+plot(history2)
+```
+
+
+# Defining and Training Perceptron with Trainable Activation
+
+```{r}
+inp1 <- layer_input(shape=c(784))
+sub_neuron_11 <- inp1 %>% layer_dense(units = 1)
+inp_portion <- keras_model(inp1, sub_neuron_11)
+
+meta_input = layer_input(shape = 1)
+sub_neuron_11 <- meta_input %>% layer_dense(units = 1, activation = "relu")
+sub_neuron_12 <- sub_neuron_11 %>% layer_dense(units = 4, activation = "relu")
+sub_neuron_13 <- sub_neuron_12 %>% layer_dense(units = 1, activation="relu")
+meta_output <- layer_add(inputs=c(sub_neuron_13, sub_neuron_11))
+meta_neuron <- keras_model(meta_input, meta_output)
+
+final_input = layer_input(shape = 1)
+final_output = final_input %>% 
+  layer_dense(units=10, activation = "softmax")
+
+final_layer <- keras_model(final_input, final_output)
+
+input = layer_input(shape = 784)
+output = input %>% 
+  inp_portion() %>% 
+  meta_neuron() %>%
+  final_layer()
+   
+model = keras_model(input, output)
+summary(model)
+```
+
+```{r}
+model %>% compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_rmsprop(),
+  metrics = c("accuracy")
+)
+```
+
+
+```{r}
+history <- model %>% fit(
+  x_train, y_train, 
+  epochs = 50, batch_size = 512, 
+  validation_split = 0.1,
+)
+```
+```{r}
+plot(history)
+```
+
+## Visualize trained metaneuron activation function
+
+```{r}
+neuron_inp = inp_portion %>% predict(x_train)
+neuron_out = meta_neuron %>% predict(neuron_inp)
+```
+```{r}
+plot(neuron_inp, neuron_out)
+```
+
+# Generalize Meta-Neuron Implementation to Arbitrary Number of Meta-Neurons and Arbitrary Number of Layers
+
+```{r}
+
+make_metaneuron <- function(inp, layers, num_neurons_per_layer) {
+  sub_neuron_11 <- inp %>% layer_dense(units = 1)
+  inp_portion <- keras_model(inp1, sub_neuron_11)
+  
+  meta_input = layer_input(shape = 1)
+  sub_neuron_11 <- meta_input %>% layer_dense(units = 1, activation = "relu")
+  
+  ###
+  # Structure here can be modified to include more layers 
+  # or more or less neurons per layer using function inputs
+  sub_neuron_12 <- sub_neuron_11 %>% layer_dense(units = num_neurons_per_layer, activation = "relu")
+  
+  for (i in 1:layers) {
+    sub_neuron_12 <- sub_neuron_12 %>% layer_dense(units = num_neurons_per_layer, activation = "relu")
+  }
+  ###
+  
+  sub_neuron_13 <- sub_neuron_12 %>% layer_dense(units = 1, activation="relu")
+  
+  # Add skip connection to help model train faster
+  meta_output <- layer_add(inputs=c(sub_neuron_13, sub_neuron_11))
+  
+  meta_neuron <- keras_model(meta_input, meta_output)
+  
+  input <- layer_input(shape = 784)
+  output <- input %>% 
+    inp_portion() %>% 
+    meta_neuron()
+  
+  model <- keras_model(input, output)
+  
+  return(model)
+}
+
+build_model = function(inp, num_layers, meta_neuron_layers, num_meta_neurons_per_layer, num_neurons_per_meta_neuron_layer) {
+  
+  cur_inp = inp
+  cur_output <- layer_dense(units = num_meta_neurons_per_layer)
+  layers = c()
+  
+  for (layer_num in 1:num_layers) {
+    
+    print("layer_num")
+    print(layer_num)
+    
+    cur_layer = list()
+    
+    for (mn_num in 1:num_meta_neurons_per_layer) {
+      
+      print("current neuron in layer")
+      print(mn_num)
+      
+      cur_metaneuron = make_metaneuron(cur_inp, layers=meta_neuron_layers, 
+                                       num_neurons_per_layer=num_neurons_per_meta_neuron_layer)
+      
+      # print(summary(cur_metaneuron))
+      
+      # print(cur_metaneuron)
+      
+      cur_layer <- append(cur_layer, cur_metaneuron)
+      # print(cur_layer)
+    }
+    
+    print("here1")
+    
+    print(length(cur_layer))
+    
+    out = layer_concatenate(cur_layer)
+    
+    print("here2")
+    
+    layer = keras_model(cur_inp, cur_output)
+    
+    print("here3")
+    
+    append(layers, layer)
+    
+    # print(summary(layer))
+    
+    cur_inp = layer_input(shape = num_meta_neurons_per_layer)
+    cur_output <- layer_dense(units = num_meta_neurons_per_layer)
+  }
+  
+  
+  model <- keras_model(inp, output)
+  
+  return(model)
+}
+   
+
+
+```
+
+
+# Work continued in .ipynb notebook because Keras in R is significantly less user friendly than Keras in Python
+
+
+
+
+
